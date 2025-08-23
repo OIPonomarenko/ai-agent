@@ -6,6 +6,18 @@ from huggingface_hub import InferenceClient  # add to requirements.txt
 
 DEFAULT_API_URL = "https://agents-course-unit4-scoring.hf.space"
 
+def format_final_answer(q: str, raw: str) -> str:
+    text = raw.strip().splitlines()[0]
+    if "how many" in q.lower():
+        m = re.search(r"\d+", text)
+        if m:
+            return m.group(0)
+    # As a safeguard, also strip common wrappers:
+    for pre in ("final answer:", "answer:", "final:", "prediction:"):
+        if text.lower().startswith(pre):
+            text = text[len(pre):].strip()
+    return text
+
 # --- provider selection (HF serverless text-generation by default; optional Groq) ---
 def select_model():
     provider = os.getenv("PROVIDER", "hf").lower()
@@ -60,8 +72,7 @@ class BasicAgent:
                     chat = self.hf.chat_completion(
                         model=model,
                         messages=[{"role": "user", "content": prompt}],
-                        max_tokens=128,
-                        temperature=0.2,
+                        temperature=0.0, max_tokens=16, top_p=1.0
                     )
                     return chat.choices[0].message["content"].strip()
                 raise
@@ -92,11 +103,8 @@ class BasicAgent:
         if ctx:
             prompt += f"\nContext:\n{ctx[:2000]}\n"
 
-        ans = self._llm(prompt).strip().splitlines()[0]
-        # strip common wrappers just in case
-        for pre in ("final answer:", "answer:", "final:", "prediction:"):
-            if ans.lower().startswith(pre): ans = ans[len(pre):].strip()
-        return ans
+        raw = self._llm(prompt)
+        return format_final_answer(question, raw)
 
 def run_and_submit_all( profile: gr.OAuthProfile | None):
     """
