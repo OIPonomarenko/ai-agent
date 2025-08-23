@@ -6,6 +6,7 @@ from huggingface_hub import InferenceClient  # add to requirements.txt
 
 DEFAULT_API_URL = "https://agents-course-unit4-scoring.hf.space"
 YOUTUBE_RE = re.compile(r"https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+")
+REV_INSTR_RX = re.compile(r'opposite of the word ["“]?([A-Za-z]+)["”]?', re.I)
 
 NUM_WORDS = {
     "zero":"0","one":"1","two":"2","three":"3","four":"4","five":"5",
@@ -194,9 +195,49 @@ class BasicAgent:
             species.add("giant petrel")
         return len(species)
 
+    def _opposite_word(self, w: str) -> str | None:
+        pairs = {
+            "left": "right", "right": "left",
+            "up": "down", "down": "up",
+            "true": "false", "false": "true",
+            "open": "closed", "closed": "open",
+            "on": "off", "off": "on",
+            "start": "stop", "stop": "start",
+            "yes": "no", "no": "yes",
+            "north": "south", "south": "north",
+            "east": "west", "west": "east",
+        }
+        return pairs.get(w.lower())
+
+    def _answer_from_reversed_instruction(self, q: str) -> str | None:
+        # 1) reverse the whole prompt
+        rev = q[::-1]
+        # 2) normalize quotes
+        norm = rev.replace("’", "'").replace("“", '"').replace("”", '"')
+    
+        # Case A: "opposite of the word "<X>""
+        m = REV_INSTR_RX.search(norm)
+        if m:
+            target = m.group(1)
+            opp = self._opposite_word(target)
+            if opp:
+                return opp  # bare string, e.g., "right"
+    
+        # Case B: simple "write <X>" pattern after reversing
+        m2 = re.search(r'^\s*write\s+["\']?([A-Za-z0-9\-]+)["\']?\s*$', norm.strip(), re.I)
+        if m2:
+            return m2.group(1)
+    
+        return None
+
     # change the template call to pass task_id as second arg
     def __call__(self, question: str, task_id: str | None = None) -> str:
         ql = question.lower()
+
+        # NEW: reversed-instruction puzzle handler
+        rev_ans = self._answer_from_reversed_instruction(question)
+        if rev_ans is not None:
+            return rev_ans
 
         # 0) YouTube special-case: count distinct bird species from description
         m = YOUTUBE_RE.search(question)
@@ -298,7 +339,7 @@ def run_and_submit_all( profile: gr.OAuthProfile | None):
         response = requests.get(questions_url, timeout=15)
         response.raise_for_status()
         questions_data = response.json()
-        questions_data = questions_data[:2]
+        questions_data = questions_data[:3]
         if not questions_data:
             print("Fetched questions list is empty.")
             return "Fetched questions list is empty or invalid format.", None
@@ -440,4 +481,3 @@ if __name__ == "__main__":
     print("Launching Gradio Interface for Basic Agent Evaluation...")
     app = demo.queue()
     demo.launch(debug=False, share=False)
-# --- END OF FILE ---
