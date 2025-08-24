@@ -300,9 +300,159 @@ class BasicAgent:
     
         return None
 
+    def _parse_op_table_from_text(self, text: str):
+        """
+        Parse a Markdown table like:
+        |*|a|b|c|
+        |---|---|---|---|
+        |a|a|b|c|
+        |b|b|c|a|
+        |c|c|a|b|
+        Returns (S, T) where S is a list of symbols, and
+        T is a dict-of-dicts T[row][col] = result.
+        """
+        if not text:
+            return None
+    
+        lines = [ln.strip() for ln in text.splitlines() if "|" in ln]
+        if not lines:
+            return None
+
+        # find header line (the one starting with |*|)
+        header = None
+        for ln in lines:
+            cells = [c.strip() for c in ln.strip("|").split("|")]
+            if cells and cells[0] in {"*", "∗"}:
+                header = cells
+                break
+        if not header:
+            return None
+    
+        symbols = header[1:]
+        if not symbols:
+            return None
+
+        # build table from subsequent lines that look like rows
+        T = {r: {} for r in symbols}
+        for ln in lines:
+            cells = [c.strip() for c in ln.strip("|").split("|")]
+            if not cells or cells[0] not in symbols:
+                continue
+            row = cells[0]
+            vals = cells[1:]
+            if len(vals) != len(symbols):
+                continue
+            for col, val in zip(symbols, vals):
+                T[row][col] = val
+
+        # sanity: ensure all rows present
+        if any(r not in T or len(T[r]) != len(symbols) for r in symbols):
+            return None
+
+        return symbols, T
+
+    def _find_identity(self, S, T):
+        # two-sided identity e satisfies e*x = x and x*e = x for all x
+        for e in S:
+            if all(T[e][x] == x for x in S) and all(T[x][e] == x for x in S):
+                return e
+        return None
+
+    def _is_commutative(self, S, T):
+        for x in S:
+            for y in S:
+                if T[x][y] != T[y][x]:
+                    return False
+        return True
+
+    def _is_associative(self, S, T):
+        for x in S:
+            for y in S:
+                for z in S:
+                    if T[T[x][y]][z] != T[x][T[y][z]]:
+                        return False
+        return True
+
+    def _inverse_of(self, x, S, T, e):
+        if e is None:
+            return None
+        for y in S:
+            if T[x][y] == e and T[y][x] == e:
+                return y
+        return None
+
+    def _idempotents(self, S, T):
+        return [x for x in S if T[x][x] == x]
+    
+    def _answer_from_op_table(self, question: str, table_text: str):
+        parsed = self._parse_op_table_from_text(table_text)
+        if not parsed:
+            return None
+        S, T = parsed
+        ql = question.lower()
+
+        # --- NEW: subset of S that appears in any non-commutative counterexample ---
+        # e.g., "provide the subset of S involved in any possible counter-examples
+        # that prove * is not commutative. Provide ... comma separated ... alphabetical order."
+        if (
+            ("counter-example" in ql or "counter examples" in ql or "counter-examples" in ql or "counterexample" in ql)
+            and "commutative" in ql
+            and "subset" in ql
+        ):
+            elems = set()
+            for x in S:
+                for y in S:
+                    if T[x][y] != T[y][x]:
+                        elems.add(x); elems.add(y)
+            # EXACT MATCH expects alphabetical, comma+space separated, bare string
+            return ", ".join(sorted(elems)) if elems else ""
+
+        # 1) direct product like "b*e" or "what is a * d?"
+        m = re.search(r"\b([A-Za-z])\s*\*\s*([A-Za-z])\b", question)
+        if m and m.group(1) in S and m.group(2) in S:
+            return T[m.group(1)][m.group(2)]
+
+        # 2) identity element?
+        if "identity" in ql or "neutral element" in ql or "unit element" in ql:
+            e = self._find_identity(S, T)
+            return e if e is not None else "None"
+
+        # 3) associativity?
+        if "associative" in ql or "associativity" in ql:
+            return "Yes" if self._is_associative(S, T) else "No"
+
+        # 4) commutativity?
+        if "commutative" in ql or "commutativity" in ql or "abelian" in ql:
+            return "Yes" if self._is_commutative(S, T) else "No"
+
+        # 5) inverse of x?
+        inv_m = re.search(r"inverse of\s+([A-Za-z])", ql)
+        if inv_m:
+            x = inv_m.group(1)
+            if x in S:
+                e = self._find_identity(S, T)
+                inv = self._inverse_of(x, S, T, e)
+                return inv if inv is not None else "None"
+
+        # 6) idempotent elements?
+        if "idempotent" in ql or "idempotents" in ql:
+            ids = self._idempotents(S, T)
+            return " ".join(ids) if ids else "None"
+
+        return None
+
+    
     # change the template call to pass task_id as second arg
     def __call__(self, question: str, task_id: str | None = None) -> str:
         ql = question.lower()
+        table_text = self._fetch_file_text(task_id) if task_id else None
+
+        # NEW: matrix quest
+        if table_text is None:
+            table_text = question  # sometimes the table is embedded in the prompt
+        op_ans = self._answer_from_op_table(question, table_text)
+        if op_ans is not None:
+            return op_ans
 
         # NEW: Dinosaur FA (Nov 2016) nominator fast-path
         if ("featured article" in ql and "november 2016" in ql
@@ -426,7 +576,7 @@ def run_and_submit_all( profile: gr.OAuthProfile | None):
         response = requests.get(questions_url, timeout=15)
         response.raise_for_status()
         questions_data = response.json()
-        questions_data = questions_data[:5]
+        questions_data = questions_data[:6]
         if not questions_data:
             print("Fetched questions list is empty.")
             return "Fetched questions list is empty or invalid format.", None
@@ -568,3 +718,4 @@ if __name__ == "__main__":
     print("Launching Gradio Interface for Basic Agent Evaluation...")
     app = demo.queue()
     demo.launch(debug=False, share=False)
+# --- END OF FILE ---
